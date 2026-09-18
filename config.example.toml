@@ -1,0 +1,112 @@
+[model]
+name = "small"
+device = "cuda"
+compute_type = "int8_float16"
+cpu_fallback = true
+cpu_compute_type = "int8"
+
+[audio]
+# Empty uses the current PipeWire default source.
+# target = "alsa_input.usb-Yamaha_Corporation_Steinberg_UR12-00.analog-stereo"
+sample_rate = 16000
+channels = 1
+max_seconds = 300
+
+[transcription]
+beam_size = 3
+multilingual = true
+vad_filter = true
+min_silence_duration_ms = 500
+initial_prompt = "Техническая software-development диктовка на русском и английском. Сохраняй названия технологий и идентификаторы."
+condition_on_previous_text = true
+hotwords = [
+  "Herdr",
+  "Codex",
+  "Rust",
+  "Tokio",
+  "Redis",
+  "ClickHouse",
+  "PostgreSQL",
+  "SOCKS5",
+]
+
+# Context is a description of what you are talking about, not an instruction to the model.
+# Global context and the selected profile are merged with per-recording --context hints.
+[context]
+text = ""
+hotwords = []
+language = "auto" # e.g. ru, en, uk; auto keeps mixed-language recognition
+# default_profile = "development"
+# files = ["background.md"] # UTF-8; relative to THIS config file, or absolute paths
+max_chars = 4000
+max_prompt_chars = 800
+max_file_bytes = 65536
+max_hotwords = 128
+
+[context.profiles.development]
+text = "Обсуждаем разработку: Rust, Tokio, Redis, PostgreSQL, API и названия функций."
+hotwords = ["Herdr", "Codex", "Tokio", "PostgreSQL"]
+# files = ["contexts/development.md"]
+# language = "ru"
+
+# The deepest matching directory selects a profile, unless --profile is supplied.
+# [[context.bindings]]
+# path = "~/Projects/my-project"
+# profile = "development"
+
+[normalization.replacements]
+"хердр" = "Herdr"
+"кодекс" = "Codex"
+"редис" = "Redis"
+"клик хаус" = "ClickHouse"
+"постгрес" = "PostgreSQL"
+"сокс пять" = "SOCKS5"
+"workspice" = "Workspace"
+
+[vocabulary]
+enabled = true
+include_identifiers = true
+max_terms = 96
+max_files = 2000
+max_bytes = 8388608
+
+[correction]
+# Optional. Run `herdr-stt corrector install`, then set enabled = true.
+enabled = false
+backend = "managed" # managed or openai
+trigger = "uncertain" # uncertain or always
+endpoint = "http://127.0.0.1:18118/v1"
+model = "qwen3-4b"
+timeout_seconds = 30
+min_word_probability = 0.55
+min_segment_avg_logprob = -0.75
+low_confidence_word_ratio = 0.20
+max_edits = 8
+max_chunks = 4
+# Remote endpoints are rejected by default so transcripts cannot leave the machine accidentally.
+allow_remote = false
+
+[correction.managed]
+idle_seconds = 120
+context_tokens = 2048
+gpu_layers = "all"
+# binary = "/custom/path/to/llama-server"
+# model_path = "/custom/path/to/model.gguf"
+
+[history]
+enabled = true
+retention_days = 7
+max_entries = 200
+
+[workspaces]
+fuzzy_threshold = 0.90
+fuzzy_margin = 0.08
+
+# Optional aliases help mixed Russian/English workspace names.
+# [workspaces.aliases]
+# "Papaproxy Rust Proxy" = ["папа прокси раст"]
+
+[worker]
+# python = "/absolute/path/to/python/.venv/bin/python"
+startup_timeout_seconds = 240
+transcription_timeout_seconds = 240

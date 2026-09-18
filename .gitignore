@@ -1,0 +1,13 @@
+/target/
+/bin/
+/python/.venv/
+/python/.pytest_cache/
+/python/.ruff_cache/
+/python/**/__pycache__/
+*.wav
+
+
+/dist/
+/.pytest_cache/
+/.ruff_cache/
+**/__pycache__/

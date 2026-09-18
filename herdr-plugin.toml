@@ -1,0 +1,43 @@
+id = "herdr.stt"
+name = "Voice Input"
+version = "0.3.0"
+min_herdr_version = "0.8.2"
+description = "Local Whisper dictation with context profiles, project vocabulary and optional Qwen correction"
+platforms = ["linux"]
+
+[[build]]
+command = ["bash", "scripts/build.sh"]
+platforms = ["linux"]
+
+[[startup]]
+command = ["bin/herdr-stt", "setup"]
+
+[[actions]]
+id = "setup"
+title = "Voice input: initialize settings and services"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-stt", "setup"]
+
+[[actions]]
+id = "reload"
+title = "Voice input: reload settings"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-stt", "reload"]
+
+[[actions]]
+id = "toggle"
+title = "Voice input: start or stop recording"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-stt", "toggle"]
+
+[[actions]]
+id = "cancel"
+title = "Voice input: cancel recording"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-stt", "cancel"]
+
+[[actions]]
+id = "status"
+title = "Voice input: show status"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-stt", "status"]

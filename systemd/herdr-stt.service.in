@@ -1,0 +1,23 @@
+[Unit]
+Description=Herdr local speech-to-text daemon
+Documentation=https://github.com/SYSTRAN/faster-whisper
+After=pipewire.service
+
+[Service]
+Type=simple
+RuntimeDirectory=herdr-stt
+RuntimeDirectoryMode=0700
+WorkingDirectory=%t/herdr-stt
+Environment=@ENV_PROJECT_ROOT@
+Environment=@ENV_CONFIG_PATH@
+Environment=@ENV_STATE_DIR@
+Environment=PYTHONUNBUFFERED=1
+Environment=RUST_LOG=herdr_stt=info
+ExecStart=@DAEMON_BINARY@
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

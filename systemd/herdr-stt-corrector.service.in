@@ -1,0 +1,16 @@
+[Unit]
+Description=Optional Herdr STT Qwen transcript corrector
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network.target
+
+[Service]
+Type=simple
+Environment=@ENV_PROJECT_ROOT@
+Environment=@ENV_CONFIG_PATH@
+Environment=@ENV_STATE_DIR@
+ExecStart=@STT_BINARY@ corrector serve
+Restart=no
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

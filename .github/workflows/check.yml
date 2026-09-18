@@ -1,0 +1,25 @@
+name: Check plugin
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: astral-sh/setup-uv@v6
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: uv sync --project python --locked
+      - run: uv run --project python --locked ruff check --config python/pyproject.toml python scripts
+      - run: uv run --project python --locked pytest python/tests
+      - run: HERDR_STT_ACCELERATOR=cpu bash scripts/build.sh
+      - run: python/.venv/bin/python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herdr-stt-source
+          path: dist/*
