@@ -10,7 +10,8 @@ use crate::history;
 use crate::paths;
 use crate::pipeline::build_transcript;
 use crate::protocol::{
-    API_VERSION, HerdrContext, Request, Response, StartParams, StatusResult, Transcript,
+    API_VERSION, CaptureStatus, HerdrContext, Request, Response, StartParams, StatusResult,
+    Transcript,
 };
 use crate::vocabulary::ProjectVocabulary;
 use crate::worker::WorkerSupervisor;
@@ -23,9 +24,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, oneshot};
 
 mod recording;
-use recording::{
-    Recording, cancel_recording_timeout, finish_recorder, signal_group, spawn_recorder,
-};
+use recording::{Recording, cancel_recording_timeout, finish_recorder, spawn_recorder};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Local faster-whisper daemon for Herdr")]
@@ -49,6 +48,7 @@ struct AppState {
 enum Phase {
     Idle,
     Recording(Box<Recording>),
+    Finishing,
     Transcribing,
 }
 
@@ -189,11 +189,12 @@ async fn handle_request(request: Request, shared: &Arc<Shared>) -> Response {
 }
 
 async fn status(shared: &Shared) -> ApiResult<Value> {
-    let state = shared.state.lock().await;
-    let phase = match state.phase {
-        Phase::Idle => "idle",
-        Phase::Recording(_) => "recording",
-        Phase::Transcribing => "transcribing",
+    let mut state = shared.state.lock().await;
+    let (phase, capture) = match &mut state.phase {
+        Phase::Idle => ("idle", None),
+        Phase::Recording(recording) => ("recording", Some(recording.capture_status())),
+        Phase::Finishing => ("transcribing", Some(CaptureStatus::Finishing)),
+        Phase::Transcribing => ("transcribing", None),
     };
     let has_last = state.last.is_some();
     drop(state);
@@ -204,6 +205,7 @@ async fn status(shared: &Shared) -> ApiResult<Value> {
         .unwrap_or_else(|_| shared.worker_info.clone());
     Ok(serde_json::to_value(StatusResult {
         state: phase.into(),
+        capture,
         model: info.model.clone(),
         device: info.device.clone(),
         compute_type: info.compute_type.clone(),
@@ -217,7 +219,7 @@ async fn status(shared: &Shared) -> ApiResult<Value> {
     })?)
 }
 
-async fn start_recording(shared: &Shared, params: Value) -> ApiResult<Value> {
+async fn start_recording(shared: &Arc<Shared>, params: Value) -> ApiResult<Value> {
     let params: StartParams = serde_json::from_value(params)
         .map_err(|error| ApiFailure::new("invalid_params", error.to_string()))?;
     let recognition = resolve_context(
@@ -232,7 +234,12 @@ async fn start_recording(shared: &Shared, params: Value) -> ApiResult<Value> {
         Phase::Recording(_) => {
             return Err(ApiFailure::new("already_recording", "recording is active"));
         }
-        Phase::Transcribing => return Err(ApiFailure::new("busy", "transcription is in progress")),
+        Phase::Finishing | Phase::Transcribing => {
+            return Err(ApiFailure::new(
+                "busy",
+                "recording is finishing or being transcribed",
+            ));
+        }
     }
     let mut recording = spawn_recorder(
         &shared.config,
@@ -241,16 +248,32 @@ async fn start_recording(shared: &Shared, params: Value) -> ApiResult<Value> {
         params.vocabulary,
     )
     .await?;
-    let process_group = recording.process_group;
+    let path = recording.path.clone();
+    let daemon = Arc::downgrade(shared);
     let max_seconds = shared.config.audio.max_seconds;
-    let (timeout_cancel, timeout_cancelled) = oneshot::channel();
+    let (timeout_cancel, mut timeout_cancelled) = oneshot::channel();
     recording.timeout_cancel = Some(timeout_cancel);
     tokio::spawn(async move {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(max_seconds)) => {
-                signal_group(process_group, libc::SIGINT);
+        for (delay, signal) in [
+            (max_seconds, libc::SIGINT),
+            (3, libc::SIGTERM),
+            (1, libc::SIGKILL),
+        ] {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                _ = &mut timeout_cancelled => return,
             }
-            _ = timeout_cancelled => {}
+            let Some(shared) = daemon.upgrade() else {
+                return;
+            };
+            let mut state = shared.state.lock().await;
+            let Phase::Recording(recording) = &mut state.phase else {
+                return;
+            };
+            if recording.path != path || !recording.signal_if_running(signal) {
+                return;
+            }
+            recording.limit_reached = true;
         }
     });
     state.phase = Phase::Recording(Box::new(recording));
@@ -260,15 +283,15 @@ async fn start_recording(shared: &Shared, params: Value) -> ApiResult<Value> {
 async fn stop_and_transcribe(shared: &Shared) -> ApiResult<Value> {
     let mut recording = {
         let mut state = shared.state.lock().await;
-        let phase = std::mem::replace(&mut state.phase, Phase::Transcribing);
+        let phase = std::mem::replace(&mut state.phase, Phase::Finishing);
         match phase {
             Phase::Recording(recording) => recording,
             Phase::Idle => {
                 state.phase = Phase::Idle;
                 return Err(ApiFailure::new("not_recording", "no recording is active"));
             }
-            Phase::Transcribing => {
-                state.phase = Phase::Transcribing;
+            Phase::Finishing | Phase::Transcribing => {
+                state.phase = phase;
                 return Err(ApiFailure::new(
                     "busy",
                     "transcription is already in progress",
@@ -279,6 +302,7 @@ async fn stop_and_transcribe(shared: &Shared) -> ApiResult<Value> {
 
     let result = async {
         finish_recorder(&mut recording).await?;
+        shared.state.lock().await.phase = Phase::Transcribing;
         let path = recording.path.to_string_lossy().to_string();
         let (worker_transcript, info) = {
             let mut worker = shared.worker.lock().await;
@@ -324,11 +348,15 @@ async fn stop_and_transcribe(shared: &Shared) -> ApiResult<Value> {
 async fn cancel_recording(shared: &Shared) -> ApiResult<Value> {
     let mut recording = {
         let mut state = shared.state.lock().await;
-        match std::mem::replace(&mut state.phase, Phase::Idle) {
+        let phase = std::mem::replace(&mut state.phase, Phase::Finishing);
+        match phase {
             Phase::Recording(recording) => recording,
-            Phase::Idle => return Ok(json!({"state": "idle", "cancelled": false})),
-            Phase::Transcribing => {
-                state.phase = Phase::Transcribing;
+            Phase::Idle => {
+                state.phase = Phase::Idle;
+                return Ok(json!({"state": "idle", "cancelled": false}));
+            }
+            Phase::Finishing | Phase::Transcribing => {
+                state.phase = phase;
                 return Err(ApiFailure::new(
                     "busy",
                     "cannot cancel active transcription",
@@ -337,11 +365,12 @@ async fn cancel_recording(shared: &Shared) -> ApiResult<Value> {
         }
     };
     cancel_recording_timeout(&mut recording);
-    signal_group(recording.process_group, libc::SIGINT);
+    recording.signal_if_running(libc::SIGINT);
     let mut child = recording.child;
     let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
     let _ = child.kill().await;
     let _ = tokio::fs::remove_file(recording.path).await;
+    shared.state.lock().await.phase = Phase::Idle;
     Ok(json!({"state": "idle", "cancelled": true}))
 }
 
@@ -428,7 +457,7 @@ async fn shutdown(shared: &Shared) {
     };
     if let Some(mut recording) = recording {
         cancel_recording_timeout(&mut recording);
-        signal_group(recording.process_group, libc::SIGINT);
+        recording.signal_if_running(libc::SIGINT);
         let _ = tokio::fs::remove_file(recording.path).await;
     }
     shared.worker.lock().await.terminate().await;

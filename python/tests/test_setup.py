@@ -28,6 +28,9 @@ def test_setup_preserves_configuration_and_quotes_relocated_paths(tmp_path, monk
     assert '%% and $' in service
     assert 'Environment="HERDR_STT_CONFIG=' in service
     assert "@PROJECT_ROOT@" not in service
+    tray = (units / "herdr-stt-tray.service").read_text()
+    assert 'bin/herdr-stt" tray' in tray
+    assert "WantedBy=graphical-session.target" in tray
     config.write_text("[context]\ntext = 'Keep my settings'\n")
     old_mtime = (units / "herdr-stt.service").stat().st_mtime_ns
     setup.setup(root, config, state, units, activate=False)

@@ -15,6 +15,7 @@ mod routing;
 use crate::context::{self, RecognitionHints};
 use crate::paths;
 use crate::protocol::{StartParams, StatusResult, Transcript};
+use crate::tray::{self, Attempt, Report, Status};
 use crate::vocabulary;
 use routing::route_transcript;
 use serde::Serialize;
@@ -104,6 +105,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show the recording state in the desktop system tray.
+    Tray,
     /// Cancel the current recording without transcription.
     Cancel,
     /// Print the last successful transcript.
@@ -180,8 +183,12 @@ enum HistoryCommands {
 pub async fn run() -> Result<()> {
     let args = Args::parse();
     match args.command {
-        Commands::Toggle { context } => toggle(context).await,
-        Commands::Setup { keybinding } => setup(keybinding),
+        Commands::Toggle { context } => Attempt::start().finish(toggle(context).await),
+        Commands::Setup { keybinding } => Attempt::start().finish(
+            setup(keybinding)
+                .map(|()| None)
+                .context("Voice input setup failed"),
+        ),
         Commands::Profiles => {
             let config = Config::load()?;
             print_json(&config.context.profiles.keys().collect::<Vec<_>>())
@@ -195,17 +202,34 @@ pub async fn run() -> Result<()> {
                 &context.hints(&config)?,
             )?)
         }
-        Commands::Status { json } => show_status(json).await,
-        Commands::Cancel => cancel().await,
+        Commands::Status { json } => Attempt::start().finish(
+            show_status(json)
+                .await
+                .map(|()| None)
+                .context("Unable to read STT status"),
+        ),
+        Commands::Tray => tray::run().await,
+        Commands::Cancel => {
+            Attempt::start().finish(cancel().await.context("Unable to cancel recording"))
+        }
         Commands::Last { json, raw } => show_last(json, raw).await,
         Commands::Transcribe {
             path,
             json,
             raw,
             context,
-        } => transcribe(path, json, raw, context).await,
+        } => Attempt::start().finish(
+            transcribe(path, json, raw, context)
+                .await
+                .context("File transcription failed"),
+        ),
         Commands::Doctor { json } => doctor(json).await,
-        Commands::Reload => reload().await,
+        Commands::Reload => Attempt::start().finish(
+            reload()
+                .await
+                .map(|()| None)
+                .context("Voice input reload failed"),
+        ),
         Commands::Corrector { command } => match command {
             CorrectorCommands::Install => corrector_install(),
             CorrectorCommands::Status { json } => corrector_status(json).await,
@@ -216,8 +240,10 @@ pub async fn run() -> Result<()> {
     }
 }
 
-async fn toggle(options: ContextArgs) -> Result<()> {
-    ensure_daemon().await?;
+async fn toggle(options: ContextArgs) -> Result<Option<Report>> {
+    ensure_daemon()
+        .await
+        .context("Unable to start the STT service")?;
     let status: StatusResult = client::call("status", json!({})).await?;
     let current_context = herdr::context_from_env();
     match status.state.as_str() {
@@ -257,45 +283,19 @@ async fn toggle(options: ContextArgs) -> Result<()> {
                     vocabulary: project_vocabulary.terms,
                 },
             )
-            .await?;
-            herdr::notify(
-                &current_context,
-                "🎙 Recording",
-                Some("Press Ctrl+Alt+V again to stop"),
-                None,
-            );
-            Ok(())
+            .await
+            .context("Unable to start recording")?;
+            Ok(None)
         }
         "recording" => {
-            herdr::notify(
-                &current_context,
-                "Transcribing…",
-                Some("faster-whisper is processing the recording"),
-                None,
-            );
-            let transcript: Transcript = match client::call("stop", json!({})).await {
-                Ok(transcript) => transcript,
-                Err(error) => {
-                    herdr::notify(
-                        &current_context,
-                        "Voice input failed",
-                        Some(&error.to_string()),
-                        Some("request"),
-                    );
-                    return Err(error);
-                }
-            };
-            route_transcript(transcript).await
+            let transcript: Transcript = client::call("stop", json!({}))
+                .await
+                .context("Unable to finish or transcribe recording")?;
+            route_transcript(transcript)
+                .map(Some)
+                .context("Voice command failed · recover the text with herdr-stt last")
         }
-        "transcribing" => {
-            herdr::notify(
-                &current_context,
-                "Still transcribing",
-                Some("Wait for the current transcript to finish"),
-                None,
-            );
-            Ok(())
-        }
+        "transcribing" => Ok(None),
         other => Err(anyhow!("unknown daemon state {other}")),
     }
 }
@@ -316,34 +316,16 @@ async fn show_status(json_output: bool) -> Result<()> {
             status.correction_backend.as_deref().unwrap_or("disabled")
         );
     }
-    if std::env::var_os("HERDR_PLUGIN_ID").is_some() {
-        let context = herdr::context_from_env();
-        herdr::notify(
-            &context,
-            "Herdr STT status",
-            Some(&format!(
-                "{} · {} / {} / {}",
-                status.state, status.model, status.device, status.compute_type
-            )),
-            None,
-        );
-    }
     Ok(())
 }
 
-async fn cancel() -> Result<()> {
+async fn cancel() -> Result<Option<Report>> {
     let result: Value = client::call("cancel", json!({})).await?;
-    let context = herdr::context_from_env();
-    herdr::notify(
-        &context,
-        "Voice recording cancelled",
-        Some("No transcript was produced"),
-        None,
-    );
     if std::env::var_os("HERDR_PLUGIN_ID").is_none() {
         print_json(&result)?;
     }
-    Ok(())
+    Ok((result["cancelled"] == true)
+        .then(|| Report::new(Status::Cancelled, "Recording cancelled", None)))
 }
 
 async fn show_last(json_output: bool, raw: bool) -> Result<()> {
@@ -372,7 +354,7 @@ async fn transcribe(
     json_output: bool,
     raw: bool,
     options: ContextArgs,
-) -> Result<()> {
+) -> Result<Option<Report>> {
     let path = path
         .canonicalize()
         .with_context(|| format!("failed to resolve {}", path.display()))?;
@@ -397,7 +379,7 @@ async fn transcribe(
     )
     .await?;
     if json_output {
-        print_json(&transcript)
+        print_json(&transcript)?;
     } else {
         println!(
             "{}",
@@ -407,8 +389,12 @@ async fn transcribe(
                 &transcript.text
             }
         );
-        Ok(())
     }
+    Ok(Some(if transcript.deterministic_text.trim().is_empty() {
+        Report::no_speech()
+    } else {
+        Report::new(Status::Done, "Audio file transcribed", None)
+    }))
 }
 
 #[derive(Serialize)]

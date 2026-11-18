@@ -51,6 +51,12 @@ The CLI is also available at `<plugin-root>/bin/herdr-stt`; the local installer 
 Press `Ctrl+Alt+V` once to start recording and again to stop. Ordinary speech is inserted into the
 original Herdr pane without Enter.
 
+The Herdr STT icon stays visible on desktops with a StatusNotifierItem tray, including Ubuntu
+with AppIndicators. Its icon changes as recording starts, stops and transcribes. Open the tray
+menu for the latest result or error. If the duration limit stops the microphone, the icon shows
+that the recording is saved and ready to transcribe with `Ctrl+Alt+V`. Herdr STT uses the tray
+for feedback without popups or sounds. The tray runs independently of the speech daemon.
+
 Strict voice commands:
 
 - `отправь промпт <текст>` / `send prompt <text>` — submit a new prompt immediately.

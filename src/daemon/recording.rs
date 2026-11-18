@@ -1,5 +1,10 @@
 use super::{ApiFailure, ApiResult};
-use crate::{config::Config, context::ResolvedContext, paths, protocol::HerdrContext};
+use crate::{
+    config::Config,
+    context::ResolvedContext,
+    paths,
+    protocol::{CaptureStatus, HerdrContext},
+};
 use std::{
     os::unix::process::CommandExt,
     path::PathBuf,
@@ -21,6 +26,35 @@ pub(super) struct Recording {
     pub(super) recognition: ResolvedContext,
     pub(super) vocabulary: Vec<String>,
     pub(super) timeout_cancel: Option<oneshot::Sender<()>>,
+    pub(super) limit_reached: bool,
+}
+
+impl Recording {
+    pub(super) fn capture_status(&mut self) -> CaptureStatus {
+        match self.child.try_wait() {
+            Ok(None) if self.limit_reached => CaptureStatus::Finishing,
+            Ok(None) => CaptureStatus::Active,
+            Ok(Some(status)) if self.limit_reached && status.success() && self.path.is_file() => {
+                CaptureStatus::Recorded
+            }
+            Ok(Some(status)) => {
+                tracing::debug!(%status, "recorder exited before a complete recording was available");
+                CaptureStatus::Failed
+            }
+            Err(error) => {
+                tracing::debug!(%error, "failed to inspect recorder");
+                CaptureStatus::Failed
+            }
+        }
+    }
+
+    pub(super) fn signal_if_running(&mut self, signal: i32) -> bool {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            signal_group(self.process_group, signal);
+            return true;
+        }
+        false
+    }
 }
 
 pub(super) async fn spawn_recorder(
@@ -89,17 +123,18 @@ pub(super) async fn spawn_recorder(
         recognition,
         vocabulary,
         timeout_cancel: None,
+        limit_reached: false,
     })
 }
 
 pub(super) async fn finish_recorder(recording: &mut Recording) -> ApiResult<()> {
     cancel_recording_timeout(recording);
-    signal_group(recording.process_group, libc::SIGINT);
+    recording.signal_if_running(libc::SIGINT);
     match tokio::time::timeout(Duration::from_secs(3), recording.child.wait()).await {
         Ok(Ok(_)) => {}
         Ok(Err(error)) => return Err(ApiFailure::new("recording_failed", error.to_string())),
         Err(_) => {
-            signal_group(recording.process_group, libc::SIGTERM);
+            recording.signal_if_running(libc::SIGTERM);
             let _ = tokio::time::timeout(Duration::from_secs(1), recording.child.wait()).await;
             let _ = recording.child.kill().await;
         }
@@ -119,7 +154,7 @@ pub(super) fn cancel_recording_timeout(recording: &mut Recording) {
     }
 }
 
-pub(super) fn signal_group(process_group: i32, signal: i32) {
+fn signal_group(process_group: i32, signal: i32) {
     if process_group > 1 {
         unsafe {
             libc::kill(-process_group, signal);
