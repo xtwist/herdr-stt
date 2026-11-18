@@ -270,7 +270,7 @@ pub(crate) async fn run() -> Result<()> {
     };
     let mut last = Indicator::poll(&dir).await;
     let tray = last.clone().assume_sni_available(true).spawn().await?;
-    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
