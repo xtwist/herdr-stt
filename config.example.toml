@@ -1,5 +1,5 @@
 [model]
-name = "small"
+name = "large-v3-turbo"
 device = "cuda"
 compute_type = "int8_float16"
 cpu_fallback = true

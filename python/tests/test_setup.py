@@ -21,7 +21,7 @@ def test_setup_preserves_configuration_and_quotes_relocated_paths(tmp_path, monk
     state = tmp_path / "state"
     units = tmp_path / "units"
     setup.setup(root, config, state, units, activate=False)
-    tomllib.loads(config.read_text())
+    assert tomllib.loads(config.read_text())["model"]["name"] == "large-v3-turbo"
     assert config.stat().st_mode & 0o777 == 0o600
     service = (units / "herdr-stt.service").read_text()
     assert 'ExecStart=:"' in service
@@ -31,10 +31,11 @@ def test_setup_preserves_configuration_and_quotes_relocated_paths(tmp_path, monk
     tray = (units / "herdr-stt-tray.service").read_text()
     assert 'bin/herdr-stt" tray' in tray
     assert "WantedBy=graphical-session.target" in tray
-    config.write_text("[context]\ntext = 'Keep my settings'\n")
+    existing_config = "[model]\nname = 'small'\n\n[context]\ntext = 'Keep my settings'\n"
+    config.write_text(existing_config)
     old_mtime = (units / "herdr-stt.service").stat().st_mtime_ns
     setup.setup(root, config, state, units, activate=False)
-    assert "Keep my settings" in config.read_text()
+    assert config.read_text() == existing_config
     assert (units / "herdr-stt.service").stat().st_mtime_ns == old_mtime
 
 

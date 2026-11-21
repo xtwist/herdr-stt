@@ -27,8 +27,10 @@ herdr-stt doctor
 ```
 
 The standard plugin build installs dependencies and compiles the binaries. Setup creates a
-private configuration and user services, preserving existing settings. The Whisper model is
-loaded/downloaded on first dictation; Qwen is downloaded only by `corrector install`.
+private configuration and user services, preserving existing settings. New configurations use
+Whisper `large-v3-turbo` by default. You can choose another model with `[model].name` in
+`config.toml`. The selected Whisper model downloads on first dictation, and Qwen downloads
+only when you run `corrector install`.
 Setup also runs on Herdr startup and before dictation, so a freshly installed plugin works
 without running the local installer. Services are started on demand.
 

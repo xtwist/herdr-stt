@@ -182,7 +182,7 @@ pub struct ModelConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            name: "small".into(),
+            name: "large-v3-turbo".into(),
             device: "cuda".into(),
             compute_type: "int8_float16".into(),
             cpu_fallback: true,
@@ -413,6 +413,8 @@ mod tests {
         let config: Config = toml::from_str(include_str!("../config.example.toml"))
             .expect("example config should parse");
         config.validate().expect("example config should validate");
+        assert_eq!(Config::default().model.name, "large-v3-turbo");
+        assert_eq!(config.model.name, Config::default().model.name);
     }
 
     #[test]

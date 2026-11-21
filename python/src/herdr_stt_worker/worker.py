@@ -33,7 +33,7 @@ def disable_onnx_telemetry() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Long-lived faster-whisper JSON-lines worker")
-    parser.add_argument("--model", default="small")
+    parser.add_argument("--model", default="large-v3-turbo")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--compute-type", default="int8_float16")
     parser.add_argument("--cpu-compute-type", default="int8")
