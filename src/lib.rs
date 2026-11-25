@@ -11,5 +11,6 @@ pub mod intent;
 pub mod paths;
 pub mod pipeline;
 pub mod protocol;
+mod tray;
 pub mod vocabulary;
 pub mod worker;

@@ -35,11 +35,15 @@ async fn context_reaches_worker_errors_recover_and_status_does_not_wait_for_mode
     let worker = temp.path().join("fake-worker");
     std::fs::write(&worker, r##"#!/usr/bin/env python3
 import json, sys, time
+from pathlib import Path
 print(json.dumps(dict(type='ready', model='fixture', device='cpu', compute_type='int8')), flush=True)
 for line in sys.stdin:
     request = json.loads(line)
     time.sleep(2.0 if request['audio_path'].endswith('hang.wav') else 0.35)
-    if request['audio_path'].endswith('fail.wav'):
+    audio = Path(request['audio_path'])
+    if audio.name == 'fail.wav' or (
+        audio.name.startswith('recording-') and Path(__file__).with_name('worker-fail').exists()
+    ):
         print(json.dumps(dict(type='response', id=request['id'], ok=False, error='test failure')), flush=True)
         continue
     result = dict(text=request['initial_prompt'], language=request['language'], language_probability=1.0,
@@ -53,8 +57,12 @@ for line in sys.stdin:
         r##"#!/usr/bin/env python3
 import signal, sys, time
 from pathlib import Path
+if Path(__file__).with_name('recorder-fail').exists(): sys.exit(1)
 Path(sys.argv[-1]).write_text('fixture')
 signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+if Path(__file__).with_name('recorder-exit').exists():
+    time.sleep(0.45)
+    sys.exit(1)
 while True: time.sleep(0.05)
 "##,
     )
@@ -65,6 +73,7 @@ while True: time.sleep(0.05)
     let config = temp.path().join("config.toml");
     let mut settings = herdr_stt::config::Config::default();
     settings.worker.python = Some(worker.display().to_string());
+    settings.audio.max_seconds = 1;
     settings.history.enabled = false;
     settings.context.files = vec![background.clone()];
     settings.worker.transcription_timeout_seconds = 1;
@@ -81,7 +90,7 @@ while True: time.sleep(0.05)
     let socket = temp.path().join("stt.sock");
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_herdr-sttd"))
         .arg("--config")
-        .arg(config)
+        .arg(&config)
         .env("HERDR_STT_SOCKET", &socket)
         .env(
             "PATH",
@@ -184,11 +193,26 @@ while True: time.sleep(0.05)
         .ok
     );
     std::fs::write(&background, "New background for the next recording").unwrap();
+    assert_eq!(
+        call(&socket, "status", json!({})).await.result.unwrap()["capture"],
+        "active"
+    );
+    wait_for_capture(&socket, "recorded").await;
     let stopped = call(&socket, "stop", json!({})).await.result.unwrap();
     assert_eq!(stopped["text"], "Original snapshot");
     assert_eq!(stopped["context"]["pane_id"], "original-pane");
     assert!(call(&socket, "start", json!({})).await.ok);
     assert!(call(&socket, "cancel", json!({})).await.ok);
+
+    let recorder_exit = temp.path().join("recorder-exit");
+    std::fs::write(&recorder_exit, "").unwrap();
+    assert!(call(&socket, "start", json!({})).await.ok);
+    wait_for_capture(&socket, "failed").await;
+    assert!(call(&socket, "cancel", json!({})).await.ok);
+    std::fs::remove_file(recorder_exit).unwrap();
+
+    std::fs::write(&background, "").unwrap();
+    verify_cli_feedback(temp.path(), &socket, &config).await;
     assert!(
         std::fs::read_dir(temp.path().join("herdr-stt"))
             .unwrap()
@@ -209,4 +233,123 @@ while True: time.sleep(0.05)
             .success()
     );
     assert!(!socket.exists());
+}
+
+async fn wait_for_capture(socket: &Path, expected: &str) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result = call(socket, "status", json!({})).await.result.unwrap();
+            if result["capture"] == expected {
+                assert_eq!(result["state"], "recording");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("capture did not reach {expected}"));
+}
+
+async fn verify_cli_feedback(dir: &Path, socket: &Path, config: &Path) {
+    let python = dir.join("python/.venv/bin/python");
+    std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+    std::fs::write(&python, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let herdr = dir.join("fake-herdr");
+    let command_log = dir.join("herdr-commands");
+    std::fs::write(
+        &herdr,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$HERDR_FIXTURE_LOG"
+case "$1 $2" in
+  "workspace list") echo '{"result":{"workspaces":[]}}' ;;
+  "pane send-text") test -z "$HERDR_FIXTURE_ROUTE_FAILURE" ;;
+  *) exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let cli = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr-stt"));
+        command
+            .env("HERDR_STT_SOCKET", socket)
+            .env("HERDR_STT_CONFIG", config)
+            .env("HERDR_STT_PROJECT_ROOT", dir)
+            .env("HERDR_BIN_PATH", &herdr)
+            .env("HERDR_FIXTURE_LOG", &command_log)
+            .env("HERDR_PLUGIN_ID", "herdr.stt")
+            .env("HERDR_PANE_ID", "original-pane")
+            .env("XDG_RUNTIME_DIR", dir)
+            .current_dir(dir);
+        command
+    };
+    let report = || {
+        serde_json::from_slice::<Value>(
+            &std::fs::read(dir.join("herdr-stt-tray/result.json")).unwrap(),
+        )
+        .unwrap()["report"]
+            .clone()
+    };
+    let results = [
+        (
+            "Test dictation",
+            "toggle",
+            None,
+            "Done",
+            "Voice text inserted",
+        ),
+        ("", "toggle", None, "NoSpeech", "No speech detected"),
+        ("", "cancel", None, "Cancelled", "Recording cancelled"),
+        (
+            "Test dictation",
+            "toggle",
+            Some("worker-fail"),
+            "Error",
+            "Voice input error",
+        ),
+        (
+            "Test dictation",
+            "toggle",
+            Some("route-fail"),
+            "Error",
+            "Voice input error",
+        ),
+    ];
+    for (hint, stop_command, failure, expected_status, title) in results {
+        let start = cli()
+            .args(["toggle", "--context", hint])
+            .output()
+            .await
+            .unwrap();
+        assert!(start.status.success(), "{:?}", start.stderr);
+        let mut stop = cli();
+        if let Some(failure) = failure {
+            if failure == "worker-fail" {
+                std::fs::write(dir.join(failure), "").unwrap();
+            } else {
+                stop.env("HERDR_FIXTURE_ROUTE_FAILURE", "1");
+            }
+        }
+        let result = stop.arg(stop_command).output().await.unwrap();
+        assert_eq!(
+            result.status.success(),
+            failure.is_none(),
+            "{:?}",
+            result.stderr
+        );
+        if failure == Some("worker-fail") {
+            std::fs::remove_file(dir.join("worker-fail")).unwrap();
+        }
+        assert_eq!(report()["status"], expected_status);
+        assert_eq!(report()["title"], title);
+    }
+    std::fs::write(dir.join("recorder-fail"), "").unwrap();
+    let bad_start = cli().arg("toggle").output().await.unwrap();
+    assert!(!bad_start.status.success());
+    assert_eq!(report()["detail"], "Unable to start recording");
+    let calls = std::fs::read_to_string(command_log).unwrap();
+    assert!(calls.contains("pane send-text original-pane Test dictation"));
+    assert!(!calls.contains("notification"));
 }

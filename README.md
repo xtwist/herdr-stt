@@ -27,8 +27,10 @@ herdr-stt doctor
 ```
 
 The standard plugin build installs dependencies and compiles the binaries. Setup creates a
-private configuration and user services, preserving existing settings. The Whisper model is
-loaded/downloaded on first dictation; Qwen is downloaded only by `corrector install`.
+private configuration and user services, preserving existing settings. New configurations use
+Whisper `large-v3-turbo` by default. You can choose another model with `[model].name` in
+`config.toml`. The selected Whisper model downloads on first dictation, and Qwen downloads
+only when you run `corrector install`.
 Setup also runs on Herdr startup and before dictation, so a freshly installed plugin works
 without running the local installer. Services are started on demand.
 
@@ -50,6 +52,12 @@ The CLI is also available at `<plugin-root>/bin/herdr-stt`; the local installer 
 
 Press `Ctrl+Alt+V` once to start recording and again to stop. Ordinary speech is inserted into the
 original Herdr pane without Enter.
+
+The Herdr STT icon stays visible on desktops with a StatusNotifierItem tray, including Ubuntu
+with AppIndicators. Its icon changes as recording starts, stops and transcribes. Open the tray
+menu for the latest result or error. If the duration limit stops the microphone, the icon shows
+that the recording is saved and ready to transcribe with `Ctrl+Alt+V`. Herdr STT uses the tray
+for feedback without popups or sounds. The tray runs independently of the speech daemon.
 
 Strict voice commands:
 

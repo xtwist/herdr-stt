@@ -9,6 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+TRAY_UNIT = "herdr-stt-tray.service"
+
 
 def systemd_quote(value: str, *, command: bool = False) -> str:
     if any(char in value for char in "\n\r\0"):
@@ -43,7 +45,7 @@ def render_units(root: Path, config: Path, state: Path) -> dict[str, str]:
         "@DAEMON_BINARY@": systemd_quote(str(root / "bin/herdr-sttd"), command=True),
     }
     units = {}
-    for name in ("herdr-stt.service", "herdr-stt-corrector.service"):
+    for name in ("herdr-stt.service", "herdr-stt-corrector.service", TRAY_UNIT):
         content = (root / "systemd" / f"{name}.in").read_text()
         for marker, value in replacements.items():
             content = content.replace(marker, value)
@@ -66,16 +68,31 @@ def setup(root: Path, config: Path, state: Path, unit_dir: Path, *, activate: bo
         else:
             with os.fdopen(descriptor, "w") as handle:
                 handle.write(content)
-    changed = False
-    for name, content in render_units(root, config, state).items():
-        changed = write_changed(unit_dir / name, content) or changed
-    if activate and changed:
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        # Refresh an existing installation, but do not load models on first setup.
-        subprocess.run(
-            ["systemctl", "--user", "try-restart", "herdr-stt.service", "herdr-stt-corrector.service"],
-            check=True,
-        )
+    changed = [
+        name for name, content in render_units(root, config, state).items()
+        if write_changed(unit_dir / name, content)
+    ]
+    if not activate:
+        return
+
+    systemctl = ["systemctl", "--user"]
+    if changed:
+        subprocess.run([*systemctl, "daemon-reload"], check=True)
+    # Refresh existing services with changed definitions without loading models on first setup.
+    speech_units = [name for name in changed if name != TRAY_UNIT]
+    if speech_units:
+        subprocess.run([*systemctl, "try-restart", *speech_units], check=True)
+
+    try:
+        enabled = [*systemctl, "is-enabled", "--quiet", TRAY_UNIT]
+        if subprocess.run(enabled, check=False).returncode:
+            subprocess.run([*systemctl, "enable", TRAY_UNIT], check=True)
+        graphical = [*systemctl, "is-active", "--quiet", "graphical-session.target"]
+        if subprocess.run(graphical, check=False).returncode == 0:
+            operation = "restart" if TRAY_UNIT in changed else "start"
+            subprocess.run([*systemctl, operation, TRAY_UNIT], check=True)
+    except subprocess.CalledProcessError as error:
+        print(f"Could not start the Herdr STT tray: {error}", file=sys.stderr)
 
 
 def main() -> None:

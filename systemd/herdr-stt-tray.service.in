@@ -1,0 +1,15 @@
+[Unit]
+Description=Herdr speech-to-text tray indicator
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@STT_BINARY@ tray
+RuntimeDirectory=herdr-stt-tray
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target

@@ -170,17 +170,6 @@ pub fn focus_workspace(context: &HerdrContext, workspace_id: &str) -> Result<()>
     ensure_success(&output, "workspace focus")
 }
 
-pub fn notify(context: &HerdrContext, title: &str, body: Option<&str>, sound: Option<&str>) {
-    let mut args = vec!["notification", "show", title];
-    if let Some(body) = body {
-        args.extend(["--body", body]);
-    }
-    if let Some(sound) = sound {
-        args.extend(["--sound", sound]);
-    }
-    let _ = run(context, args);
-}
-
 fn run<I, S>(context: &HerdrContext, args: I) -> Result<Output>
 where
     I: IntoIterator<Item = S>,
